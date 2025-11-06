@@ -18,14 +18,34 @@ const SessionControls = ({ onStateChange, onSessionComplete, isLogging, canLog }
   const [seconds, setSeconds] = useState(0);
   const sessionDuration = 25 * 60; // 25 minutes in seconds
   
-  // Use ref to avoid stale closure in setInterval
+  // Use refs to avoid stale closures and rendering issues
   const onStateChangeRef = useRef(onStateChange);
-  onStateChangeRef.current = onStateChange;
+  const secondsRef = useRef(seconds);
+  const isActiveRef = useRef(isActive);
+  
+  // Keep refs in sync
+  useEffect(() => {
+    onStateChangeRef.current = onStateChange;
+  }, [onStateChange]);
+  
+  useEffect(() => {
+    secondsRef.current = seconds;
+  }, [seconds]);
+  
+  useEffect(() => {
+    isActiveRef.current = isActive;
+  }, [isActive]);
+
+  // Notify parent of state changes using a separate effect to avoid render-time updates
+  useEffect(() => {
+    const progress = (seconds / sessionDuration) * 100;
+    onStateChange(isActive, Math.min(progress, 100));
+  }, [isActive, seconds, sessionDuration, onStateChange]);
 
   const handleStop = useCallback(() => {
     setIsActive(false);
     setIsPaused(false);
-    onStateChangeRef.current(false, 0);
+    setSeconds(prev => prev); // Keep current seconds for saving
   }, []);
 
   useEffect(() => {
@@ -35,14 +55,16 @@ const SessionControls = ({ onStateChange, onSessionComplete, isLogging, canLog }
       interval = setInterval(() => {
         setSeconds(prev => {
           const newSeconds = prev + 1;
-          const progress = (newSeconds / sessionDuration) * 100;
-          onStateChangeRef.current(true, Math.min(progress, 100));
           
           if (newSeconds >= sessionDuration) {
-            handleStop();
-            toast.success("Focus session completed!", {
-              description: "Click 'Save Session' to encrypt and store your data on-chain.",
-            });
+            // Use setTimeout to avoid state update during render
+            setTimeout(() => {
+              setIsActive(false);
+              setIsPaused(false);
+              toast.success("Focus session completed!", {
+                description: "Click 'Save Session' to encrypt and store your data on-chain.",
+              });
+            }, 0);
             return sessionDuration;
           }
           
@@ -54,7 +76,7 @@ const SessionControls = ({ onStateChange, onSessionComplete, isLogging, canLog }
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [isActive, isPaused, sessionDuration, handleStop]);
+  }, [isActive, isPaused, sessionDuration]);
 
   const handleStart = () => {
     setIsActive(true);

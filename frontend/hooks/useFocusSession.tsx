@@ -59,6 +59,27 @@ function getFocusSessionByChainId(
 }
 
 /**
+ * Safely call a contract method that returns euint32.
+ * Returns ZeroHash if the value is uninitialized or empty.
+ */
+async function safeGetEuint32(
+  contract: ethers.Contract,
+  methodName: string
+): Promise<string> {
+  try {
+    const result = await contract[methodName]();
+    // If result is empty, undefined, or null, return ZeroHash
+    if (!result || result === "0x" || result === "") {
+      return ethers.ZeroHash;
+    }
+    return result;
+  } catch {
+    // If decoding fails (e.g., uninitialized value returns "0x"), return ZeroHash
+    return ethers.ZeroHash;
+  }
+}
+
+/**
  * Main FocusSession React hook for encrypted focus session tracking
  */
 export const useFocusSession = (parameters: {
@@ -78,7 +99,6 @@ export const useFocusSession = (parameters: {
     fhevmDecryptionSignatureStorage,
     chainId,
     ethersSigner,
-    ethersReadonlyProvider,
     sameChain,
     sameSigner,
   } = parameters;
@@ -103,9 +123,18 @@ export const useFocusSession = (parameters: {
   const isDecryptingRef = useRef<boolean>(false);
   const isLoggingRef = useRef<boolean>(false);
 
-  const isDecrypted = 
-    sessionCountHandle && sessionCountHandle === clearSessionCount?.handle &&
-    totalMinutesHandle && totalMinutesHandle === clearTotalMinutes?.handle;
+  // Check if data is decrypted - handles must match their clear values
+  const isDecrypted = useMemo(() => {
+    // If no session count handle, not decrypted yet
+    if (!sessionCountHandle) return false;
+    // If session count is zero hash, treat as decrypted with zeros
+    if (sessionCountHandle === ethers.ZeroHash) return true;
+    // Otherwise check if handles match their clear values
+    return (
+      sessionCountHandle === clearSessionCount?.handle &&
+      (!totalMinutesHandle || totalMinutesHandle === clearTotalMinutes?.handle)
+    );
+  }, [sessionCountHandle, totalMinutesHandle, clearSessionCount, clearTotalMinutes]);
 
   // FocusSession Contract Info
   const focusSession = useMemo(() => {
@@ -123,13 +152,13 @@ export const useFocusSession = (parameters: {
   }, [focusSession]);
 
   const canRefresh = useMemo(() => {
-    return focusSession.address && ethersReadonlyProvider && !isRefreshing;
-  }, [focusSession.address, ethersReadonlyProvider, isRefreshing]);
+    return focusSession.address && ethersSigner && !isRefreshing;
+  }, [focusSession.address, ethersSigner, isRefreshing]);
 
-  // Refresh handles from contract
+  // Refresh handles from contract - must use signer because contract uses msg.sender
   const refreshHandles = useCallback(() => {
     if (isRefreshingRef.current) return;
-    if (!focusSessionRef.current?.chainId || !focusSessionRef.current?.address || !ethersReadonlyProvider || !ethersSigner) {
+    if (!focusSessionRef.current?.chainId || !focusSessionRef.current?.address || !ethersSigner) {
       setSessionCountHandle(undefined);
       setTotalMinutesHandle(undefined);
       setWeeklyGoalHandle(undefined);
@@ -138,41 +167,64 @@ export const useFocusSession = (parameters: {
 
     isRefreshingRef.current = true;
     setIsRefreshing(true);
+    setMessage("Fetching encrypted session data...");
 
     const thisChainId = focusSessionRef.current.chainId;
     const thisAddress = focusSessionRef.current.address;
     
+    // Must use ethersSigner because contract methods use msg.sender to get user data
     const contract = new ethers.Contract(
       thisAddress,
       focusSessionRef.current.abi,
       ethersSigner
     );
 
+    // Use safe getters that handle uninitialized values
     Promise.all([
-      contract.getSessionCount(),
-      contract.getTotalMinutes(),
-      contract.getWeeklyGoal(),
+      safeGetEuint32(contract, "getSessionCount"),
+      safeGetEuint32(contract, "getTotalMinutes"),
+      safeGetEuint32(contract, "getWeeklyGoal"),
     ])
       .then(([sessionCount, totalMinutes, weeklyGoal]) => {
         if (sameChain.current(thisChainId) && thisAddress === focusSessionRef.current?.address) {
           setSessionCountHandle(sessionCount);
           setTotalMinutesHandle(totalMinutes);
           setWeeklyGoalHandle(weeklyGoal);
+          
+          // If all values are zero (uninitialized), set clear values to zero
+          if (sessionCount === ethers.ZeroHash) {
+            setClearSessionCount({ handle: sessionCount, clear: BigInt(0) });
+            setClearTotalMinutes({ handle: totalMinutes, clear: BigInt(0) });
+            setClearWeeklyGoal({ handle: weeklyGoal, clear: BigInt(0) });
+            setMessage("No session data yet. Start a focus session!");
+          } else {
+            setMessage("Session data loaded. Click 'Decrypt' to view stats.");
+          }
         }
         isRefreshingRef.current = false;
         setIsRefreshing(false);
       })
       .catch((e) => {
-        setMessage("Failed to fetch session data: " + e);
+        console.error("Failed to fetch session data:", e);
+        // Set handles to zero hash on error
+        setSessionCountHandle(ethers.ZeroHash);
+        setTotalMinutesHandle(ethers.ZeroHash);
+        setWeeklyGoalHandle(ethers.ZeroHash);
+        setClearSessionCount({ handle: ethers.ZeroHash, clear: BigInt(0) });
+        setClearTotalMinutes({ handle: ethers.ZeroHash, clear: BigInt(0) });
+        setClearWeeklyGoal({ handle: ethers.ZeroHash, clear: BigInt(0) });
+        setMessage("Ready to start tracking. Log your first session!");
         isRefreshingRef.current = false;
         setIsRefreshing(false);
       });
-  }, [ethersReadonlyProvider, ethersSigner, sameChain]);
+  }, [ethersSigner, sameChain]);
 
-  // Auto refresh
+  // Auto refresh when signer is available
   useEffect(() => {
-    refreshHandles();
-  }, [refreshHandles]);
+    if (ethersSigner && focusSession.address) {
+      refreshHandles();
+    }
+  }, [ethersSigner, focusSession.address, refreshHandles]);
 
   // Decrypt all handles
   const canDecrypt = useMemo(() => {
@@ -197,6 +249,7 @@ export const useFocusSession = (parameters: {
       setClearSessionCount({ handle: sessionCountHandle, clear: BigInt(0) });
       setClearTotalMinutes({ handle: totalMinutesHandle || ethers.ZeroHash, clear: BigInt(0) });
       setClearWeeklyGoal({ handle: weeklyGoalHandle || ethers.ZeroHash, clear: BigInt(0) });
+      setMessage("No data to decrypt yet.");
       return;
     }
 
@@ -345,6 +398,12 @@ export const useFocusSession = (parameters: {
         setMessage(`Session logged! Status: ${receipt?.status}`);
 
         if (isStale()) return;
+        
+        // Reset clear values since handles will change
+        setClearSessionCount(undefined);
+        setClearTotalMinutes(undefined);
+        setClearWeeklyGoal(undefined);
+        
         refreshHandles();
       } catch (e) {
         setMessage("Failed to log session: " + e);
@@ -394,6 +453,10 @@ export const useFocusSession = (parameters: {
         setMessage(`Goal set! Status: ${receipt?.status}`);
 
         if (isStale()) return;
+        
+        // Reset clear values since handles will change
+        setClearWeeklyGoal(undefined);
+        
         refreshHandles();
       } catch (e) {
         setMessage("Failed to set goal: " + e);
@@ -429,4 +492,3 @@ export const useFocusSession = (parameters: {
     isSettingGoal,
   };
 };
-
