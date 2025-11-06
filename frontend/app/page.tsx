@@ -7,8 +7,9 @@ import TimerRing from "@/components/TimerRing";
 import SessionControls from "@/components/SessionControls";
 import ProgressRingFooter from "@/components/ProgressRingFooter";
 import { Button } from "@/components/ui/button";
-import { BarChart3, RefreshCw, Unlock, Settings } from "lucide-react";
+import { BarChart3, RefreshCw, Unlock, Settings, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import { ethers } from "ethers";
 
 import { useFhevm } from "@/fhevm/useFhevm";
 import { useInMemoryStorage } from "@/hooks/useInMemoryStorage";
@@ -260,8 +261,12 @@ export default function Home() {
               <h3 className="text-xl font-semibold mb-4">Contract Status</h3>
               <div className="space-y-2 text-sm">
                 <div className="flex justify-between">
+                  <span className="text-muted-foreground">Wallet Address:</span>
+                  <span className="font-mono text-xs">{focusSession.walletAddress || "Not connected"}</span>
+                </div>
+                <div className="flex justify-between">
                   <span className="text-muted-foreground">Contract Address:</span>
-                  <span className="font-mono">{focusSession.contractAddress || "Not deployed"}</span>
+                  <span className="font-mono text-xs">{focusSession.contractAddress || "Not deployed"}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Chain ID:</span>
@@ -279,6 +284,38 @@ export default function Home() {
                     {focusSession.isDeployed ? "Yes" : "No"}
                   </span>
                 </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Has Session Data:</span>
+                  <span className={focusSession.hasData ? "text-accent" : "text-muted-foreground"}>
+                    {focusSession.hasData ? "Yes" : "No (need to log a session first)"}
+                  </span>
+                </div>
+              </div>
+              
+              {/* Debug Info - collapsible */}
+              <details className="mt-4">
+                <summary className="text-sm text-muted-foreground cursor-pointer">Debug Info</summary>
+                <div className="mt-2 p-2 bg-muted rounded text-xs font-mono break-all">
+                  <p>Session Handle: {focusSession.sessionCountHandle || "null"}</p>
+                  <p>Is ZeroHash: {focusSession.sessionCountHandle === ethers.ZeroHash ? "Yes" : "No"}</p>
+                </div>
+              </details>
+              
+              {/* Reset Actions */}
+              <div className="mt-4 flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    focusSession.resetStats();
+                    toast.info("Resetting stats on-chain...");
+                  }}
+                  disabled={focusSession.isResetting || !ethersSigner}
+                  className="gap-2"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  {focusSession.isResetting ? "Resetting..." : "Reset On-chain Stats"}
+                </Button>
               </div>
             </div>
 

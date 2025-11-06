@@ -119,12 +119,28 @@ export const useFocusSession = (parameters: {
   const [isDecrypting, setIsDecrypting] = useState<boolean>(false);
   const [isLogging, setIsLogging] = useState<boolean>(false);
   const [isSettingGoal, setIsSettingGoal] = useState<boolean>(false);
+  const [isResetting, setIsResetting] = useState<boolean>(false);
   const [message, setMessage] = useState<string>("");
+  const [walletAddress, setWalletAddress] = useState<string | undefined>(undefined);
 
   const focusSessionRef = useRef<FocusSessionInfoType | undefined>(undefined);
   const isRefreshingRef = useRef<boolean>(false);
   const isDecryptingRef = useRef<boolean>(false);
   const isLoggingRef = useRef<boolean>(false);
+
+  // Track wallet address
+  useEffect(() => {
+    if (ethersSigner) {
+      ethersSigner.getAddress().then(setWalletAddress).catch(() => setWalletAddress(undefined));
+    } else {
+      setWalletAddress(undefined);
+    }
+  }, [ethersSigner]);
+
+  // Check if there's any data (non-zero handle)
+  const hasData = useMemo(() => {
+    return sessionCountHandle !== undefined && sessionCountHandle !== ethers.ZeroHash;
+  }, [sessionCountHandle]);
 
   // Check if data is decrypted - handles must match their clear values
   const isDecrypted = useMemo(() => {
@@ -471,9 +487,60 @@ export const useFocusSession = (parameters: {
     [ethersSigner, focusSession.address, focusSession.abi, instance, chainId, refreshHandles, sameChain, sameSigner]
   );
 
+  // Reset all stats on-chain
+  const resetStats = useCallback(
+    async () => {
+      if (!focusSession.address || !ethersSigner) {
+        setMessage("Cannot reset: wallet not connected");
+        return;
+      }
+
+      const thisChainId = chainId;
+      const thisAddress = focusSession.address;
+      const thisEthersSigner = ethersSigner;
+      const contract = new ethers.Contract(thisAddress, focusSession.abi, thisEthersSigner);
+
+      setIsResetting(true);
+      setMessage("Resetting encrypted stats on-chain...");
+
+      try {
+        const isStale = () =>
+          thisAddress !== focusSessionRef.current?.address ||
+          !sameChain.current(thisChainId) ||
+          !sameSigner.current(thisEthersSigner);
+
+        const tx = await contract.resetStats();
+        setMessage(`Waiting for reset tx: ${tx.hash}...`);
+        const receipt = await tx.wait();
+        setMessage(`Stats reset! Status: ${receipt?.status}`);
+
+        if (isStale()) return;
+        
+        // Clear all local state
+        setSessionCountHandle(undefined);
+        setTotalMinutesHandle(undefined);
+        setWeeklyGoalHandle(undefined);
+        setClearSessionCount(undefined);
+        setClearTotalMinutes(undefined);
+        setClearWeeklyGoal(undefined);
+        
+        // Refresh to get new (zero) handles
+        refreshHandles();
+      } catch (e) {
+        setMessage("Failed to reset stats: " + e);
+        console.error("Reset stats error:", e);
+      } finally {
+        setIsResetting(false);
+      }
+    },
+    [ethersSigner, focusSession.address, focusSession.abi, chainId, refreshHandles, sameChain, sameSigner]
+  );
+
   return {
     contractAddress: focusSession.address,
+    walletAddress,
     isDeployed,
+    hasData,
     canRefresh,
     canDecrypt,
     canLogSession,
@@ -481,6 +548,7 @@ export const useFocusSession = (parameters: {
     decryptStats,
     logSession,
     setWeeklyGoal,
+    resetStats,
     isDecrypted,
     message,
     sessionCount: clearSessionCount?.clear,
@@ -493,5 +561,6 @@ export const useFocusSession = (parameters: {
     isDecrypting,
     isLogging,
     isSettingGoal,
+    isResetting,
   };
 };
